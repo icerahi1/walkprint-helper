@@ -54,102 +54,124 @@ public class MainActivity extends Activity {
             return;
         }
 
-        try {
-            // 1. Decode PNG Base64 into Android Bitmap
-            byte[] decodedBytes = Base64.decode(base64Image, Base64.DEFAULT);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+        new Thread(() -> {
+            try {
+                // 1. Decode PNG Base64 into Android Bitmap
+                byte[] decodedBytes = Base64.decode(base64Image, Base64.DEFAULT);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
 
-            // 2. Convert Bitmap to ESC/POS 1-bit MSB ByteArray
-            int width = bitmap.getWidth();
-            int height = bitmap.getHeight();
-            int widthBytes = (int) Math.ceil(width / 8.0);
-            byte[] pixels = new byte[widthBytes * height];
+                // 2. Convert Bitmap to WalkPrint 1-bit MSB ByteArray
+                int width = bitmap.getWidth();
+                int height = bitmap.getHeight();
+                int widthBytes = (int) Math.ceil(width / 8.0);
+                byte[] pixels = new byte[widthBytes * height];
 
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    int pixel = bitmap.getPixel(x, y);
-                    int r = Color.red(pixel);
-                    int g = Color.green(pixel);
-                    int b = Color.blue(pixel);
-                    if ((r + g + b) / 3 < 210) {
-                        int byteIdx = (y * widthBytes) + (x / 8);
-                        int bit = 7 - (x % 8);
-                        pixels[byteIdx] |= (1 << bit);
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        int pixel = bitmap.getPixel(x, y);
+                        int r = Color.red(pixel);
+                        int g = Color.green(pixel);
+                        int b = Color.blue(pixel);
+                        if ((r + g + b) / 3 < 210) {
+                            int byteIdx = (y * widthBytes) + (x / 8);
+                            int bit = 7 - (x % 8);
+                            pixels[byteIdx] |= (1 << bit);
+                        }
                     }
                 }
+
+                // 3. Connect to Printer via Classic Bluetooth (RFCOMM)
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                BluetoothDevice printer = null;
+
+                Set<BluetoothDevice> pairedDevices = adapter.getBondedDevices();
+                for (BluetoothDevice device : pairedDevices) {
+                    if (device.getName() != null && (device.getName().contains("YHK") || device.getName().contains("WalkPrint"))) {
+                        printer = device;
+                        break;
+                    }
+                }
+
+                if (printer == null) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Printer not paired! Pair YHK-8D55 first.", Toast.LENGTH_LONG).show());
+                    finish();
+                    return;
+                }
+
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Printing to " + printer.getName() + "...", Toast.LENGTH_SHORT).show());
+
+                BluetoothSocket socket = printer.createRfcommSocketToServiceRecord(SPP_UUID);
+                socket.connect();
+                OutputStream os = socket.getOutputStream();
+
+                // 4. Send PROPRIETARY WalkPrint Commands
+                // Speed = 32
+                os.write(makeCommand(189, new byte[]{(byte)32}));
+                // Energy = 24000 (0x5DC0)
+                os.write(makeCommand(175, new byte[]{(byte)0xC0, (byte)0x5D, 0x00, 0x00}));
+                // Apply Energy
+                os.write(makeCommand(190, new byte[]{1}));
+
+                // Blast Image in 128-byte packets wrapped in Bitmap command (162)
+                for (int i = 0; i < pixels.length; i += 128) {
+                    int length = Math.min(128, pixels.length - i);
+                    byte[] slice = new byte[length];
+                    System.arraycopy(pixels, i, slice, 0, length);
+                    
+                    os.write(makeCommand(162, slice));
+                    Thread.sleep(10); // Slight flow control
+                }
+
+                // Finish Feed = 100
+                byte[] feed = new byte[]{(byte)100, 0};
+                os.write(makeCommand(161, feed));
+                
+                os.flush();
+                Thread.sleep(500);
+                socket.close();
+
+            } catch (Exception e) {
+                e.printStackTrace();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Print Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                finish(); // Return to PWA
             }
+        }).start();
+    }
 
-            // 3. Connect to Printer via Classic Bluetooth (RFCOMM)
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            BluetoothDevice printer = null;
-
-            Set<BluetoothDevice> pairedDevices = adapter.getBondedDevices();
-            for (BluetoothDevice device : pairedDevices) {
-                if (device.getName() != null && (device.getName().contains("YHK") || device.getName().contains("WalkPrint"))) {
-                    printer = device;
-                    break;
+    private byte crc8(byte[] payload) {
+        int crc = 0;
+        for (byte b : payload) {
+            crc ^= (b & 0xFF);
+            for (int i = 0; i < 8; i++) {
+                if ((crc & 0x80) != 0) {
+                    crc = ((crc << 1) ^ 0x07) & 0xFF;
+                } else {
+                    crc = (crc << 1) & 0xFF;
                 }
             }
-
-            if (printer == null) {
-                Toast.makeText(this, "Printer not paired! Pair YHK-8D55 in Settings first.", Toast.LENGTH_LONG).show();
-                finish();
-                return;
-            }
-
-            Toast.makeText(this, "Printing to " + printer.getName() + "...", Toast.LENGTH_SHORT).show();
-
-            // Connect using the standard Serial Port Profile (Classic Bluetooth)
-            BluetoothSocket socket = printer.createRfcommSocketToServiceRecord(SPP_UUID);
-            socket.connect();
-            OutputStream os = socket.getOutputStream();
-
-            // 4. Send WalkPrint Commands (Same proven byte sequence)
-            os.write(new byte[]{0x1E, 0x47, 0x03});
-            Thread.sleep(200);
-            os.write(new byte[]{0x1D, 0x67, 0x39});
-            Thread.sleep(200);
-            os.write(new byte[]{0x1D, 0x67, 0x69});
-            Thread.sleep(200);
-            
-            os.write(new byte[]{0x1B, 0x40}); // Initialize
-            Thread.sleep(50);
-            os.write(new byte[]{0x1B, 0x37, 0x07, (byte)0x80, 0x02}); // Energy
-            Thread.sleep(50);
-            os.write(new byte[]{0x1D, 0x49, (byte)0xF0, 0x19}); // Start Print
-            Thread.sleep(50);
-
-            // Image Header
-            byte[] header = new byte[]{
-                    0x1D, 0x76, 0x30, 0x00,
-                    (byte) (widthBytes & 0xFF), (byte) ((widthBytes >> 8) & 0xFF),
-                    (byte) (height & 0xFF), (byte) ((height >> 8) & 0xFF)
-            };
-            os.write(header);
-            
-            // Blast entire image payload instantly! Classic Bluetooth RFCOMM handles flow control automatically.
-            os.write(pixels);
-            os.flush();
-
-            Thread.sleep(500);
-            os.write(new byte[]{0x0A, 0x0A, 0x0A, 0x0A}); // Feeds
-            os.flush();
-
-            socket.close();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            Toast.makeText(this, "Print Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-        } finally {
-            finish(); // Silently return user to the Next.js PWA!
         }
+        return (byte) crc;
+    }
+
+    private byte[] makeCommand(int cmdId, byte[] payload) {
+        byte[] cmd = new byte[payload.length + 7];
+        cmd[0] = 0x51; // 81
+        cmd[1] = 0x78; // 120
+        cmd[2] = (byte) cmdId;
+        cmd[3] = 0x00; // Transfer type
+        cmd[4] = (byte) (payload.length & 0xFF);
+        cmd[5] = (byte) ((payload.length >> 8) & 0xFF);
+        System.arraycopy(payload, 0, cmd, 6, payload.length);
+        cmd[cmd.length - 2] = crc8(payload);
+        cmd[cmd.length - 1] = (byte) 0xFF;
+        return cmd;
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == 1) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Try again after getting permission
                 String base64Image = getIntent().getData().getQueryParameter("data");
                 printImage(base64Image);
             } else {
