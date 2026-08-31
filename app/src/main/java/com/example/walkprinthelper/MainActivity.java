@@ -32,12 +32,20 @@ public class MainActivity extends Activity {
         if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
             Uri data = intent.getData();
             if ("walkprint".equals(data.getScheme())) {
-                String base64Image = data.getQueryParameter("data");
-                if (base64Image != null && !base64Image.isEmpty()) {
-                    printImage(base64Image);
-                } else {
-                    finish(); // No data, close quietly
+                // Read from Clipboard to bypass Chrome URL limits!
+                android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip().getItemCount() > 0) {
+                    CharSequence pasteData = clipboard.getPrimaryClip().getItemAt(0).getText();
+                    if (pasteData != null) {
+                        String base64Image = pasteData.toString();
+                        if (base64Image.length() > 100) { // Valid base64 strings will be large
+                            printImage(base64Image);
+                            return; // Success, don't finish yet
+                        }
+                    }
                 }
+                Toast.makeText(this, "Failed to read image from clipboard!", Toast.LENGTH_LONG).show();
+                finish(); // No data, close quietly
             } else {
                 finish();
             }
@@ -98,7 +106,6 @@ public class MainActivity extends Activity {
                     return;
                 }
 
-                // FIX: Lock the printer name into a final variable for the lambda thread!
                 final String printerName = printer.getName();
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, "Printing to " + printerName + "...", Toast.LENGTH_SHORT).show());
 
@@ -134,7 +141,6 @@ public class MainActivity extends Activity {
 
             } catch (Exception e) {
                 e.printStackTrace();
-                // FIX: Lock the error message into a final variable too
                 final String errorMsg = e.getMessage();
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, "Print Failed: " + errorMsg, Toast.LENGTH_LONG).show());
             } finally {
@@ -176,8 +182,13 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == 1) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                String base64Image = getIntent().getData().getQueryParameter("data");
-                printImage(base64Image);
+                android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip().getItemCount() > 0) {
+                    CharSequence pasteData = clipboard.getPrimaryClip().getItemAt(0).getText();
+                    if (pasteData != null) {
+                        printImage(pasteData.toString());
+                    }
+                }
             } else {
                 Toast.makeText(this, "Bluetooth Permission Denied", Toast.LENGTH_SHORT).show();
                 finish();
