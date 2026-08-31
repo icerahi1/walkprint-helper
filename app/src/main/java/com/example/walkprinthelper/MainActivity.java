@@ -98,7 +98,9 @@ public class MainActivity extends Activity {
                     return;
                 }
 
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Printing to " + printer.getName() + "...", Toast.LENGTH_SHORT).show());
+                // FIX: Lock the printer name into a final variable for the lambda thread!
+                final String printerName = printer.getName();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Printing to " + printerName + "...", Toast.LENGTH_SHORT).show());
 
                 BluetoothSocket socket = printer.createRfcommSocketToServiceRecord(SPP_UUID);
                 socket.connect();
@@ -132,7 +134,9 @@ public class MainActivity extends Activity {
 
             } catch (Exception e) {
                 e.printStackTrace();
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Print Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                // FIX: Lock the error message into a final variable too
+                final String errorMsg = e.getMessage();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Print Failed: " + errorMsg, Toast.LENGTH_LONG).show());
             } finally {
                 finish(); // Return to PWA
             }
